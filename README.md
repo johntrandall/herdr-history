@@ -60,10 +60,10 @@ Dialog:
 | `enter` | Focus the selected pane (its exact pane, not just its tab) |
 | `esc` / `ctrl-c` | Close the dialog |
 
-The pane you are on stays in the list at its place in the order, marked 🟡 —
+The pane you are on stays in the list at its place in the order, marked ➡️ —
 after walking with previous/next that is your position in the history. On
-top the 🟡 row is a non-selectable fzf header, so `enter` on the top row is
-still "back to where I just was"; mid-list `enter` on the 🟡 row closes the
+top the ➡️ row is a non-selectable fzf header, so `enter` on the top row is
+still "back to where I just was"; mid-list `enter` on the ➡️ row closes the
 dialog without jumping. Previous/next walk the recorded order without
 opening the dialog; their jumps are not recorded, so walking never rewrites
 the order being walked and `super+ctrl+k` always returns exactly along the

@@ -4,7 +4,7 @@
 # The dialog is an fzf picker running inside a popup pane (see the
 # `[[panes]] picker` entry in herdr-plugin.toml). Rows are every live pane
 # across every workspace, ordered by how recently it was focused. The pane
-# you are on keeps its place in that order and is marked 🟡 — after walking
+# you are on keeps its place in that order and is marked ➡️ — after walking
 # with prev/next it shows where in the history you are standing. Recency
 # comes from this plugin's pane.focused hook: herdr exposes no last-focused
 # timestamp (see herdr-plugin.toml).
@@ -60,7 +60,7 @@ combined() {
 # Fields (tab-separated): pane_id, display.
 #   - ordered most recently focused first; panes never focused since the
 #     plugin was installed fall to the end, by tab number then pane id
-#   - the pane you are on keeps its slot and is marked 🟡
+#   - the pane you are on keeps its slot and is marked ➡️
 prune_stale() {
   local stream="$1" live id
   live=$(jq -rs -r 'map(.result // {} | (.panes? // [])[]) | .[].pane_id' <<<"$stream")
@@ -107,7 +107,7 @@ list_panes() {
        then (($wsl[.workspace_id] // .workspace_id)[0:18] + ":" + ($t.number // 0 | tostring))
        else "" end) as $wsc
     | [ .pane_id,
-        ([ (if .pane_id == $cur then "🟡" else "" end),
+        ([ (if .pane_id == $cur then "➡️" else "" end),
            ($t.label // "?"), $wsc, .pane_id,
            ((if .agent? then .agent else "" end)
             + (if $status != "" then " " + $status else "" end)) ]
@@ -195,13 +195,13 @@ case "$mode" in
       --prompt='pane history> ' \
       --preview="\"$HERDR\" pane read {1} --source visible --lines 40" \
       --preview-window='down,40%,wrap'
-    # the 🟡 row doubles as a non-selectable header when it is the newest slot
+    # the ➡️ row doubles as a non-selectable header when it is the newest slot
     # (you sit at the top of the history): the cursor then starts on the first
     # real row, so enter+enter still means "back to where I just was"
-    [[ "${rows%%$'\n'*}" == *$'\t🟡'* ]] && set -- "$@" --header-lines=1
+    [[ "${rows%%$'\n'*}" == *$'\t➡️'* ]] && set -- "$@" --header-lines=1
     sel=$(fzf "$@" <<<"$rows") || exit 0
     pane_id=${sel%%$'\t'*}
-    # the 🟡 row is where you already are: close without a jump so looking at
+    # the ➡️ row is where you already are: close without a jump so looking at
     # the history never rewrites it
     [[ "$pane_id" == "$(focused_id)" ]] && exit 0
     focus_pane "$pane_id" || true
