@@ -5,8 +5,8 @@
 # order the picker sorts by. herdr exposes no last-focused timestamp, so that
 # order has to be observed as it happens.
 id = "pane-history"
-name = "Pane History"
-version = "0.1.0"
+name = "MRU Pane History"
+version = "0.2.0"
 min_herdr_version = "0.7.4"
 description = "Navigate back through recently focused panes, MRU-first, from a popup picker."
 platforms = ["linux", "macos"]

@@ -113,8 +113,8 @@ non-CLI piece in the plugin; document it in README.
 
 ```toml
 id = "riogesulgon.pane-history"
-name = "Pane History"
-version = "0.1.0"
+name = "MRU Pane History"
+version = "0.2.0"
 min_herdr_version = "0.7.4"   # popup placement + plugin events
 description = "Navigate back through recently focused panes, MRU-first."
 platforms = ["linux", "macos"]

@@ -1,4 +1,4 @@
-# Pane History
+# MRU Pane History
 
 A [Herdr](https://herdr.dev) plugin for navigating back through previously
 focused panes. One key opens a popup dialog listing every pane across every
