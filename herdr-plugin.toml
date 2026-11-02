@@ -1,0 +1,53 @@
+# pane-history — navigate back through previously focused panes, MRU-first.
+#
+# Two halves that only make sense together, which is why they ship as one
+# plugin: the popup pane runs the picker, and the event hook records the focus
+# order the picker sorts by. herdr exposes no last-focused timestamp, so that
+# order has to be observed as it happens.
+id = "pane-history"
+name = "Pane History"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "Navigate back through recently focused panes, MRU-first, from a popup picker."
+platforms = ["linux", "macos"]
+
+# The dialog: a session-modal popup running the fzf picker. A popup has no
+# pane id and emits no pane lifecycle events, so opening the dialog does not
+# pollute the very history it displays.
+[[panes]]
+id = "picker"
+title = "Pane history"
+placement = "popup"
+width = "80%"
+height = "60%"
+command = ["./bin/pane-history"]
+
+# Fires on every pane focus — sidebar click, keybinding, CLI, or the picker's
+# own jump alike — and touches one empty file per pane: the name is the
+# pane_id, the mtime is when it was last focused. Keying by filename makes
+# each update atomic on its own key with no coordination, which is the binding
+# constraint here: herdr spawns this hook independently per event, so it can
+# neither lock nor safely read-modify-write a shared file. Pane ids are never
+# reused, so keys cannot collide. herdr creates HERDR_PLUGIN_STATE_DIR.
+#
+# The prev/next walk jumps leave a marker file in
+# $HERDR_PLUGIN_STATE_DIR/jumps named after their target; the hook consumes a
+# matching marker and skips the touch, so walking through history never
+# rewrites the order being walked.
+[[events]]
+on = "pane.focused"
+command = ['sh', '-c', 'p="$HERDR_PANE_ID"; [ -n "$p" ] || p=$(printf %s "$HERDR_PLUGIN_EVENT_JSON" | jq -r ".pane_id // empty"); [ -n "$p" ] || exit 0; m=$(find "$HERDR_PLUGIN_STATE_DIR/jumps" -name "$p" -mmin -1 2>/dev/null | head -n1); if [ -n "$m" ]; then rm -f "$m"; else mkdir -p "$HERDR_PLUGIN_STATE_DIR/panes" && touch "$HERDR_PLUGIN_STATE_DIR/panes/$p"; fi']
+
+# Walk actions bound to keys: prev steps to the pane focused before this one,
+# next undoes the step. See bin/pane-history walk() for the order semantics.
+[[actions]]
+id = "previous"
+title = "Previous pane"
+contexts = ["workspace"]
+command = ["./bin/pane-history", "prev"]
+
+[[actions]]
+id = "next"
+title = "Next pane"
+contexts = ["workspace"]
+command = ["./bin/pane-history", "next"]

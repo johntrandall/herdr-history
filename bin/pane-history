@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# pane-history — pick a previously focused herdr pane, most recent first.
+#
+# The dialog is an fzf picker running inside a popup pane (see the
+# `[[panes]] picker` entry in herdr-plugin.toml). Rows are every live pane
+# across every workspace, ordered by how recently it was focused. The pane
+# you are on keeps its place in that order and is marked 🟡 — after walking
+# with prev/next it shows where in the history you are standing. Recency
+# comes from this plugin's pane.focused hook: herdr exposes no last-focused
+# timestamp (see herdr-plugin.toml).
+#
+# Keys (fzf defaults):
+#   type          → fuzzy-filter rows
+#   enter         → focus the selected pane
+#   esc / ctrl-c  → close without jumping
+#
+# Subcommands:
+#   pane-history        open the picker (what the popup runs)
+#   pane-history list   print candidate rows as TSV (pane_id, display, ...)
+#   pane-history --smoke  print rows to $HERDR_PLUGIN_STATE_DIR/smoke.tsv and
+#                         exit; used to smoke-test the popup path headlessly
+#   pane-history prev     jump to the pane focused before this one
+#   pane-history next     undo the walk: jump forward again
+
+set -euo pipefail
+
+# herdr passes these to any process it starts for a plugin. Missing means this
+# is not running as one, which no fallback can repair.
+: "${HERDR_BIN_PATH:?pane-history: must be started by herdr as a plugin pane}"
+: "${HERDR_PLUGIN_STATE_DIR:?pane-history: must be started by herdr as a plugin pane}"
+
+HERDR="$HERDR_BIN_PATH"
+RPC="$(cd "$(dirname "$0")" && pwd)/herdr-rpc"
+
+# one empty file per pane, named by pane_id, mtime = when it was last focused
+MRU_DIR="$HERDR_PLUGIN_STATE_DIR/panes"
+
+# which pane a press came from: the server's dispatch-time context, else the
+# pane it reports focused now
+focused_id() {
+  local id
+  id=$(jq -r '.focused_pane_id // empty' <<<"${HERDR_PLUGIN_CONTEXT_JSON:-}" 2>/dev/null) || true
+  [[ -n "$id" ]] || id=$("$HERDR" pane list | jq -r '.result.panes[]? | select(.focused == true) | .pane_id' | head -n1)
+  printf '%s' "$id"
+}
+
+# Fetch every workspace/tab/pane record once and hand the combined JSON stream
+# to jq: rows out of one pass, live pane ids out of another, so stale focus
+# records can be pruned against the same snapshot the rows come from.
+combined() {
+  local ws_json wid
+  ws_json=$("$HERDR" workspace list)
+  printf '%s\n' "$ws_json"
+  jq -r '.result.workspaces[].workspace_id' <<<"$ws_json" | while read -r wid; do
+    "$HERDR" tab list --workspace "$wid"
+    "$HERDR" pane list --workspace "$wid"
+  done
+}
+
+# Fields (tab-separated): pane_id, display.
+#   - ordered most recently focused first; panes never focused since the
+#     plugin was installed fall to the end, by tab number then pane id
+#   - the pane you are on keeps its slot and is marked 🟡
+prune_stale() {
+  local stream="$1" live id
+  live=$(jq -rs -r 'map(.result // {} | (.panes? // [])[]) | .[].pane_id' <<<"$stream")
+  [[ -d "$MRU_DIR" ]] || return 0
+  for f in "$MRU_DIR"/*; do
+    [[ -e "$f" ]] || continue
+    id=${f##*/}
+    grep -qxF "$id" <<<"$live" && continue
+    # fresh files may belong to a pane created after the snapshot was taken;
+    # leave those for a later round instead of deleting a live record
+    [[ -n "$(find "$f" -mmin +1 2>/dev/null)" ]] && rm -f "$f"
+  done
+}
+
+list_panes() {
+  local stream mru="" cur
+  stream=$(combined)
+  prune_stale "$stream"
+  [[ -d "$MRU_DIR" ]] && mru=$(ls -tr "$MRU_DIR")
+  cur=$(focused_id)
+  jq -rs --arg mru "$mru" --arg cur "$cur" '
+    map(.result // {})
+    | ([.[] | select(.type == "workspace_list") | (.workspaces? // [])[]]) as $ws
+    | ($ws | map({key: .workspace_id, value: .label}) | from_entries) as $wsl
+    | ([.[] | select(.type == "tab_list") | (.tabs? // [])[]]
+        | map({key: .tab_id, value: .}) | from_entries) as $tabs
+    # a pane_id maps to its position in the mtime-ordered listing; higher =
+    # more recent. panes never focused since the plugin was installed have no
+    # entry.
+    | ($mru | split("\n") | map(select(length > 0))
+        | to_entries | reduce .[] as $e ({}; .[$e.value] = ($e.key))) as $rank
+    | [.[] | select(.type == "pane_list") | (.panes? // [])[] | select(.focused != true or .pane_id == $cur)]
+    | sort_by([ -($rank[.pane_id] // -1),
+                ($tabs[.tab_id].number // 999),
+                .pane_id ])[]
+    | ($tabs[.tab_id] // {}) as $t
+    | ({blocked: "● blocked",
+        working: "● working",
+        done:    "● done",
+        idle:    "● idle"}[.agent_status // ""] // "") as $status
+    # the workspace is noise until there is more than one of them; the tab
+    # number goes after any cut so a long workspace label can never eat it
+    | (if ($ws | length) > 1
+       then (($wsl[.workspace_id] // .workspace_id)[0:18] + ":" + ($t.number // 0 | tostring))
+       else "" end) as $wsc
+    | [ .pane_id,
+        ([ (if .pane_id == $cur then "🟡" else "" end),
+           ($t.label // "?"), $wsc, .pane_id,
+           ((if .agent? then .agent else "" end)
+            + (if $status != "" then " " + $status else "" end)) ]
+         | map(select(length > 0)) | join("  ") | gsub("[\t\n]"; " ")) ]
+    | @tsv' <<<"$stream"
+}
+
+# Focus a pane by id over the socket and confirm it actually landed. The
+# server acknowledges pane.focus before the change is observable, and a focus
+# request racing another can be dropped silently, so retry with a short settle
+# and report failure instead of pretending.
+focus_pane() {
+  local p="$1" req i
+  req=$(jq -nc --arg p "$p" '{pane_id: $p}')
+  for i in 1 2 3; do
+    "$RPC" pane.focus "$req" >/dev/null 2>&1 || return 1
+    sleep 0.1
+    [[ "$("$RPC" pane.get "$req" 2>/dev/null | jq -r '.result.pane.focused // false' 2>/dev/null)" == true ]] && return 0
+  done
+  return 1
+}
+
+# Walk the recorded focus order without opening the dialog. prev moves to the
+# pane focused before the current one, next undoes the move. The order is the
+# same mtime order the picker sorts by, and stays stable while walking: a walk
+# jump leaves a marker the pane.focused hook consumes instead of recording, so
+# prev/prev/prev walks back and next/next/next returns. A pane with no record
+# predates tracking and counts as newest.
+walk() {
+  local dir="$1" stream cur ids id first="" last="" nextc="" prevc="" target="" seen=0
+  stream=$(combined)
+  prune_stale "$stream"
+  [[ -d "$MRU_DIR" ]] || exit 0
+  # the server knows which pane the press came from; fall back to asking it
+  cur=$(jq -r '.focused_pane_id // empty' <<<"${HERDR_PLUGIN_CONTEXT_JSON:-}" 2>/dev/null) || true
+  [[ -n "$cur" ]] || cur=$("$HERDR" pane list | jq -r '.result.panes[]? | select(.focused == true) | .pane_id' | head -n1)
+  [[ -n "$cur" ]] || exit 0
+  # newest first
+  ids=$(ls -1t "$MRU_DIR")
+  for id in $ids; do
+    [[ -n "$first" ]] || first=$id
+    if [[ "$id" == "$cur" ]]; then
+      nextc=$last
+      seen=1
+    elif [[ $seen -eq 1 ]]; then
+      prevc=$id
+      seen=2
+    fi
+    last=$id
+  done
+  if [[ $seen -eq 0 ]]; then
+    [[ "$dir" == prev ]] && target=$first
+  elif [[ "$dir" == prev ]]; then
+    target=$prevc
+  else
+    target=$nextc
+  fi
+  [[ -n "$target" && "$target" != "$cur" ]] || exit 0
+  mkdir -p "$HERDR_PLUGIN_STATE_DIR/jumps"
+  touch "$HERDR_PLUGIN_STATE_DIR/jumps/$target"
+  # the marker must survive exactly until the focus event of this jump
+  focus_pane "$target" || rm -f "$HERDR_PLUGIN_STATE_DIR/jumps/$target"
+}
+
+# PANE_HISTORY_SMOKE makes the popup path testable headlessly: a
+# plugin.pane.open socket request can pass env, so the picker can be told to
+# dump its rows and exit, opening and closing the popup without a driver.
+mode="${1:-pick}"
+if [[ -n "${PANE_HISTORY_SMOKE:-}" ]]; then mode=--smoke; fi
+case "$mode" in
+  list)
+    list_panes
+    ;;
+  --smoke)
+    list_panes >"$HERDR_PLUGIN_STATE_DIR/smoke.tsv"
+    env | grep -E '^HERDR_(PLUGIN|WORKSPACE|TAB|PANE)' >>"$HERDR_PLUGIN_STATE_DIR/smoke.tsv"
+    ;;
+  pick)
+    rows=$(list_panes)
+    if [[ -z "$rows" ]]; then
+      printf 'pane-history: no previous panes yet (focus a pane first)\n'
+      exit 0
+    fi
+    set -- --delimiter=$'\t' --with-nth=2 --layout=reverse \
+      --prompt='pane history> ' \
+      --preview="\"$HERDR\" pane read {1} --source visible --lines 40" \
+      --preview-window='down,40%,wrap'
+    # the 🟡 row doubles as a non-selectable header when it is the newest slot
+    # (you sit at the top of the history): the cursor then starts on the first
+    # real row, so enter+enter still means "back to where I just was"
+    [[ "${rows%%$'\n'*}" == *$'\t🟡'* ]] && set -- "$@" --header-lines=1
+    sel=$(fzf "$@" <<<"$rows") || exit 0
+    pane_id=${sel%%$'\t'*}
+    # the 🟡 row is where you already are: close without a jump so looking at
+    # the history never rewrites it
+    [[ "$pane_id" == "$(focused_id)" ]] && exit 0
+    focus_pane "$pane_id" || true
+    ;;
+  prev | next)
+    walk "$mode"
+    ;;
+  *)
+    printf 'usage: pane-history [list|--smoke|prev|next]\n' >&2
+    exit 2
+    ;;
+esac
