@@ -15,7 +15,7 @@ The layout follows the `vendor-fork-deploy` convention.
 | Branch | What it is | Upstream PR |
 |---|---|---|
 | `main` | Tracks `upstream/main`, untouched | — |
-| `fix/one-call-listing` | Snapshot every pane in three herdr calls instead of two per workspace (2.8 s → 0.27 s a press with 103 workspaces) | opened 2026-11-12 |
+| `fix/one-call-listing` | Snapshot every pane in three herdr calls instead of two per workspace (2.8 s → 0.27 s a press with 103 workspaces) | [#1](https://github.com/riogesulgon/herdr-history/pull/1), opened 2026-11-12 |
 | `local/watchbill-system` | This file and the watchbill system files (`intake/`, `dev-docs/`, `_types/`, `mdbase.yaml`); never sent upstream | — |
 | `deployed` | `main` merged with every branch above; the checkout herdr runs | — |
 
