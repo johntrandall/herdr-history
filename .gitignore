@@ -1,1 +1,6 @@
 __pycache__/
+
+# watchbill: what seats write while they work (run-state per seat, the landing marker), never committed
+dev-docs/runs/*/run-state.json
+dev-docs/runs/landing.json
+dev-docs/agent-registry.md
