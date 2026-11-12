@@ -47,14 +47,13 @@ focused_id() {
 # Fetch every workspace/tab/pane record once and hand the combined JSON stream
 # to jq: rows out of one pass, live pane ids out of another, so stale focus
 # records can be pruned against the same snapshot the rows come from.
+# Without --workspace, `tab list` and `pane list` cover every workspace, so the
+# snapshot is three calls however many workspaces there are (looping per
+# workspace took 3.6 s with 103 of them).
 combined() {
-  local ws_json wid
-  ws_json=$("$HERDR" workspace list)
-  printf '%s\n' "$ws_json"
-  jq -r '.result.workspaces[].workspace_id' <<<"$ws_json" | while read -r wid; do
-    "$HERDR" tab list --workspace "$wid"
-    "$HERDR" pane list --workspace "$wid"
-  done
+  "$HERDR" workspace list
+  "$HERDR" tab list
+  "$HERDR" pane list
 }
 
 # Fields (tab-separated): pane_id, display.
